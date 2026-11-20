@@ -1,0 +1,142 @@
+name: Build Orange Cloud (OSS Unlocked)
+
+# 自编译全功能版云构建。
+# 触发：手动（workflow_dispatch）或 push 到 main。
+# 需在 Settings → Secrets and variables → Actions 配置下列 Secrets：
+#   必填（否则登录不可用）：
+#     CF_CLIENT_ID     自建 Cloudflare OAuth Client 的 ID
+#     CF_REDIRECT_URI  回调中转地址 https://<你的域名>/oauth/callback
+#   签名相关（二选一）：
+#     方案A-自有证书签名：SIGN_P12(base64) + SIGN_P12_PWD + SIGN_PROFILE(base64) + SIGN_PROFILE_NAME + TEAM_ID
+#     方案B-不出签名产物：全部留空，仅产出 unsigned .xcarchive/用于第三方签名平台
+#   可选：BUNDLE_PREFIX(默认 com.example.oc) / APP_GROUP / CALLBACK_SCHEME(默认 orangecloud)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  PROJECT: "apps/ios/Orange Cloud/Orange Cloud.xcodeproj"
+  SCHEME: "Orange Cloud"
+  ARCHIVE: "build/OrangeCloud.xcarchive"
+  EXPORT_DIR: "build/export"
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode
+        run: |
+          xcode-select -p
+          xcodebuild -version
+
+      - name: Prepare source (inject identity + OAuth + unlock)
+        env:
+          BUNDLE_PREFIX:   ${{ vars.BUNDLE_PREFIX }}
+          TEAM_ID:         ${{ secrets.TEAM_ID }}
+          APP_GROUP:       ${{ vars.APP_GROUP }}
+          CLIENT_ID:       ${{ secrets.CF_CLIENT_ID }}
+          REDIRECT_URI:    ${{ secrets.CF_REDIRECT_URI }}
+          CALLBACK_SCHEME: ${{ vars.CALLBACK_SCHEME }}
+        run: |
+          python3 scripts/prepare_ios_build.py
+
+      # ---------- 方案A：自有 p12 + 描述文件签名 ----------
+      - name: Import signing certificate (optional)
+        if: ${{ secrets.SIGN_P12 != '' }}
+        env:
+          SIGN_P12:     ${{ secrets.SIGN_P12 }}
+          SIGN_P12_PWD: ${{ secrets.SIGN_P12_PWD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/sign.keychain-db"
+          security create-keychain -p "tmp" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "tmp" "$KEYCHAIN_PATH"
+          echo "$SIGN_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" -P "$SIGN_P12_PWD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "tmp" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      - name: Install provisioning profile (optional)
+        if: ${{ secrets.SIGN_PROFILE != '' }}
+        env:
+          SIGN_PROFILE:      ${{ secrets.SIGN_PROFILE }}
+          SIGN_PROFILE_NAME: ${{ secrets.SIGN_PROFILE_NAME }}
+        run: |
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          echo "$SIGN_PROFILE" | base64 --decode > \
+            "$HOME/Library/MobileDevice/Provisioning Profiles/$SIGN_PROFILE_NAME.mobileprovision"
+
+      # ---------- Archive（全功能解锁的关键在这一行）----------
+      - name: Archive
+        env:
+          TEAM_ID:           ${{ secrets.TEAM_ID }}
+          SIGN_PROFILE_NAME: ${{ secrets.SIGN_PROFILE_NAME }}
+        run: |
+          mkdir -p build
+          EXTRA=""
+          if [ -n "$TEAM_ID" ]; then
+            EXTRA="$EXTRA DEVELOPMENT_TEAM=$TEAM_ID"
+          fi
+          if [ -n "$SIGN_PROFILE_NAME" ]; then
+            EXTRA="$EXTRA CODE_SIGN_STYLE=Manual PROVISIONING_PROFILE_SPECIFIER=$SIGN_PROFILE_NAME"
+          else
+            EXTRA="$EXTRA CODE_SIGNING_ALLOWED=NO"
+          fi
+          echo "Extra build settings: $EXTRA"
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$ARCHIVE" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS=OPENSOURCE_UNLOCKED \
+            $EXTRA \
+            CODE_SIGNING_REQUIRED=NO \
+            -quiet
+
+      # ---------- 方案A：导出可安装 IPA ----------
+      - name: Export signed IPA (optional)
+        if: ${{ secrets.SIGN_PROFILE != '' }}
+        env:
+          TEAM_ID:           ${{ secrets.TEAM_ID }}
+          BUNDLE_PREFIX:     ${{ vars.BUNDLE_PREFIX }}
+          SIGN_PROFILE_NAME: ${{ secrets.SIGN_PROFILE_NAME }}
+          EXPORT_METHOD:     ${{ vars.EXPORT_METHOD }}
+        run: |
+          METHOD="${EXPORT_METHOD:-ad-hoc}"
+          BUNDLE="${BUNDLE_PREFIX:-com.example.oc}"
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>$METHOD</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>stripSwiftSymbols</key><true/>
+            <key>provisioningProfiles</key>
+            <dict><key>$BUNDLE</key><string>$SIGN_PROFILE_NAME</string></dict>
+          </dict></plist>
+          EOF
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE" \
+            -exportPath "$EXPORT_DIR" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -quiet
+          ls -la "$EXPORT_DIR"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OrangeCloud-IPA
+          path: |
+            ${{ env.EXPORT_DIR }}/*.ipa
+            ${{ env.ARCHIVE }}/
+          if-no-files-found: warn
