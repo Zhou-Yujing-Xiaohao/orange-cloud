@@ -8,7 +8,7 @@ name: Build Orange Cloud (OSS Unlocked)
 #   OAuth 登录（可选）：需 CF_CLIENT_ID + CF_REDIRECT_URI（自建 Client + 回调 Worker）
 # 签名相关（二选一）：
 #   方案A-自有证书签名：SIGN_P12(base64) + SIGN_P12_PWD + SIGN_PROFILE(base64) + SIGN_PROFILE_NAME + TEAM_ID
-#   方案B-不出签名产物：全部留空，仅产出 unsigned .xcarchive/用于第三方签名平台
+#   方案B-不出签名产物：全部留空，产出 unsigned IPA（供第三方代签平台）
 # 可选：BUNDLE_PREFIX(默认 com.example.oc) / APP_GROUP / CALLBACK_SCHEME(默认 orangecloud)
 
 on:
@@ -26,6 +26,12 @@ jobs:
   build:
     runs-on: macos-26
     timeout-minutes: 60
+    env:
+      # 把 secrets 映射到 job 级 env，供各步骤 if 判断使用。
+      # 注意：GitHub Actions 的 if 条件不能直接引用 secrets，必须经由 env。
+      SIGN_P12:         ${{ secrets.SIGN_P12 }}
+      SIGN_PROFILE:     ${{ secrets.SIGN_PROFILE }}
+      TEAM_ID_SIGN:     ${{ secrets.TEAM_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,7 +61,7 @@ jobs:
 
       # ---------- 方案A：自有 p12 + 描述文件签名 ----------
       - name: Import signing certificate (optional)
-        if: ${{ secrets.SIGN_P12 != '' }}
+        if: ${{ env.SIGN_P12 != '' }}
         env:
           SIGN_P12:     ${{ secrets.SIGN_P12 }}
           SIGN_P12_PWD: ${{ secrets.SIGN_P12_PWD }}
@@ -72,7 +78,7 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Install provisioning profile (optional)
-        if: ${{ secrets.SIGN_PROFILE != '' }}
+        if: ${{ env.SIGN_PROFILE != '' }}
         env:
           SIGN_PROFILE:      ${{ secrets.SIGN_PROFILE }}
           SIGN_PROFILE_NAME: ${{ secrets.SIGN_PROFILE_NAME }}
@@ -111,7 +117,7 @@ jobs:
 
       # ---------- 方案A：导出可安装 IPA ----------
       - name: Export signed IPA (optional)
-        if: ${{ secrets.SIGN_PROFILE != '' }}
+        if: ${{ env.SIGN_PROFILE != '' }}
         env:
           TEAM_ID:           ${{ secrets.TEAM_ID }}
           BUNDLE_PREFIX:     ${{ vars.BUNDLE_PREFIX }}
@@ -141,7 +147,7 @@ jobs:
 
       # ---------- 方案B：无签名证书时，产出 unsigned IPA（供第三方代签平台使用）----------
       - name: Export unsigned IPA (fallback)
-        if: ${{ secrets.SIGN_PROFILE == '' }}
+        if: ${{ env.SIGN_PROFILE == '' }}
         run: |
           APP=$(find "$ARCHIVE/Products/Applications" -maxdepth 1 -name "*.app" -print -quit)
           echo "app: $APP"
