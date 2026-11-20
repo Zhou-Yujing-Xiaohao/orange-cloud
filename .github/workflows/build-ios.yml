@@ -139,6 +139,18 @@ jobs:
             -quiet
           ls -la "$EXPORT_DIR"
 
+      # ---------- 方案B：无签名证书时，产出 unsigned IPA（供第三方代签平台使用）----------
+      - name: Export unsigned IPA (fallback)
+        if: ${{ secrets.SIGN_PROFILE == '' }}
+        run: |
+          APP=$(find "$ARCHIVE/Products/Applications" -maxdepth 1 -name "*.app" -print -quit)
+          echo "app: $APP"
+          test -n "$APP" || { echo "no .app found"; exit 1; }
+          mkdir -p "$EXPORT_DIR/Payload"
+          cp -R "$APP" "$EXPORT_DIR/Payload/"
+          ( cd "$EXPORT_DIR" && zip -qry OrangeCloud-unsigned.ipa Payload )
+          ls -lh "$EXPORT_DIR"/*.ipa
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
