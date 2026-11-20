@@ -2,14 +2,14 @@ name: Build Orange Cloud (OSS Unlocked)
 
 # 自编译全功能版云构建。
 # 触发：手动（workflow_dispatch）或 push 到 main。
-# 需在 Settings → Secrets and variables → Actions 配置下列 Secrets：
-#   必填（否则登录不可用）：
-#     CF_CLIENT_ID     自建 Cloudflare OAuth Client 的 ID
-#     CF_REDIRECT_URI  回调中转地址 https://<你的域名>/oauth/callback
-#   签名相关（二选一）：
-#     方案A-自有证书签名：SIGN_P12(base64) + SIGN_P12_PWD + SIGN_PROFILE(base64) + SIGN_PROFILE_NAME + TEAM_ID
-#     方案B-不出签名产物：全部留空，仅产出 unsigned .xcarchive/用于第三方签名平台
-#   可选：BUNDLE_PREFIX(默认 com.example.oc) / APP_GROUP / CALLBACK_SCHEME(默认 orangecloud)
+# 登录方式二选一：
+#   ★ 推荐-API Token 直登（默认已启用）：App 内粘贴 Cloudflare API Token 即可，免建 OAuth Client、免回调中转。
+#     关闭补丁：设 vars.ENABLE_API_TOKEN_LOGIN = false
+#   OAuth 登录（可选）：需 CF_CLIENT_ID + CF_REDIRECT_URI（自建 Client + 回调 Worker）
+# 签名相关（二选一）：
+#   方案A-自有证书签名：SIGN_P12(base64) + SIGN_P12_PWD + SIGN_PROFILE(base64) + SIGN_PROFILE_NAME + TEAM_ID
+#   方案B-不出签名产物：全部留空，仅产出 unsigned .xcarchive/用于第三方签名平台
+# 可选：BUNDLE_PREFIX(默认 com.example.oc) / APP_GROUP / CALLBACK_SCHEME(默认 orangecloud)
 
 on:
   workflow_dispatch:
@@ -45,6 +45,13 @@ jobs:
           CALLBACK_SCHEME: ${{ vars.CALLBACK_SCHEME }}
         run: |
           python3 scripts/prepare_ios_build.py
+
+      # 启用「API Token 直登」补丁（免 OAuth / 免回调中转）。
+      # 设 vars.ENABLE_API_TOKEN_LOGIN = false 可关闭此步。
+      - name: Enable API Token direct login (patch)
+        if: ${{ vars.ENABLE_API_TOKEN_LOGIN != 'false' }}
+        run: |
+          python3 scripts/enable_api_token_login.py
 
       # ---------- 方案A：自有 p12 + 描述文件签名 ----------
       - name: Import signing certificate (optional)
